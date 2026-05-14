@@ -671,6 +671,12 @@ class TuyaProtocol(asyncio.Protocol, ContextualLogger):
         """Disconnected from device."""
         self.debug("Connection lost: %s", exc)
         self.real_local_key = self.local_key
+        if self.dispatcher is not None:
+            self.debug("Aborting pending message waiters due to connection lost")
+            self.dispatcher.abort()
+        if self.heartbeater is not None:
+            self.heartbeater.cancel()
+            self.heartbeater = None
         try:
             listener = self.listener and self.listener()
             if listener is not None:
