@@ -805,7 +805,8 @@ class TuyaProtocol(asyncio.Protocol, ContextualLogger):
         status = await self.exchange(DP_QUERY)
         if status and "dps" in status:
             self.dps_cache.update(status["dps"])
-        return self.dps_cache
+            return self.dps_cache
+        return None
 
     async def heartbeat(self):
         """Send a heartbeat message."""

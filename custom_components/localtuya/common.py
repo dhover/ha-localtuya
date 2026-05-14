@@ -216,10 +216,7 @@ class TuyaDevice(pytuya.TuyaListener, pytuya.ContextualLogger):
         try:
             self.debug("Retrieving initial state")
             status = await self._interface.status()
-            if status is None:
-                raise Exception("Failed to retrieve status")
-
-            self._interface.start_heartbeat()
+                if status is None or not status:
             self.status_updated(status)
             return True
 
