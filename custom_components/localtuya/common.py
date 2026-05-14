@@ -277,8 +277,27 @@ class TuyaDevice(pytuya.TuyaListener, pytuya.ContextualLogger):
         protocol_version = self._dev_config_entry[CONF_PROTOCOL_VERSION]
 
         if not await self._connect_interface(protocol_version):
-            self._connect_task = None
-            return
+            if protocol_version == "3.4":
+                self.warning(
+                    "Protocol 3.4 connect to %s failed, trying fallback to 3.3",
+                    self._dev_config_entry[CONF_HOST],
+                )
+                if await self._connect_interface("3.3"):
+                    self.info(
+                        "Protocol fallback connect successful for %s using 3.3",
+                        self._dev_config_entry[CONF_HOST],
+                    )
+                    protocol_version = "3.3"
+                else:
+                    self.error(
+                        "Protocol fallback to 3.3 failed for %s during connect",
+                        self._dev_config_entry[CONF_HOST],
+                    )
+                    self._connect_task = None
+                    return
+            else:
+                self._connect_task = None
+                return
 
         if not await self._initialize_interface():
             if protocol_version == "3.4":
