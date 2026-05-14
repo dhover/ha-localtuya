@@ -455,7 +455,10 @@ class MessageDispatcher(ContextualLogger):
             del self.listeners[seqno]
             raise
 
-        return self.listeners.pop(seqno)
+        result = self.listeners.pop(seqno)
+        if result is None:
+            raise Exception(f"dispatcher aborted while waiting for sequence {seqno}")
+        return result
 
     def add_data(self, data):
         """Add new data to the buffer and try to parse messages."""
