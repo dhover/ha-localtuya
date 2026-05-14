@@ -183,70 +183,117 @@ class TuyaDevice(pytuya.TuyaListener, pytuya.ContextualLogger):
         if not self._is_closing and self._connect_task is None and not self._interface:
             self._connect_task = asyncio.create_task(self._make_connection())
 
-    async def _make_connection(self):
-        """Subscribe localtuya entity events."""
-        self.info("Trying to connect to %s...", self._dev_config_entry[CONF_HOST])
-
+    async def _connect_interface(self, protocol_version):
+        """Connect to the device using the requested protocol version."""
         try:
             self._interface = await pytuya.connect(
                 self._dev_config_entry[CONF_HOST],
                 self._dev_config_entry[CONF_DEVICE_ID],
                 self._local_key,
-                float(self._dev_config_entry[CONF_PROTOCOL_VERSION]),
+                float(protocol_version),
                 self._dev_config_entry.get(CONF_ENABLE_DEBUG, False),
                 self,
             )
             self._interface.add_dps_to_request(self.dps_to_request)
+            return True
         except Exception as ex:  # pylint: disable=broad-except
             self.warning(
-                f"Failed to connect to {self._dev_config_entry[CONF_HOST]}: %s", ex
+                "Failed to connect to %s using protocol %s: %s",
+                self._dev_config_entry[CONF_HOST],
+                protocol_version,
+                ex,
             )
             if self._interface is not None:
                 await self._interface.close()
                 self._interface = None
+            return False
 
-        if self._interface is not None:
-            try:
+    async def _initialize_interface(self):
+        """Retrieve the device status and start heartbeat if successful."""
+        if self._interface is None:
+            return False
+
+        try:
+            self.debug("Retrieving initial state")
+            status = await self._interface.status()
+            if status is None:
+                raise Exception("Failed to retrieve status")
+
+            self._interface.start_heartbeat()
+            self.status_updated(status)
+            return True
+
+        except (UnicodeDecodeError, json.decoder.JSONDecodeError) as ex:
+            self.warning("Initial state update failed (%s), trying key update", ex)
+            await self.update_local_key()
+            if self._interface is not None:
+                await self._interface.close()
+                self._interface = None
+            return False
+
+        except Exception as ex:
+            if self._default_reset_dpids is not None and len(self._default_reset_dpids) > 0:
+                self.debug(
+                    "Initial state update failed, trying reset command "
+                    + "for DP IDs: %s",
+                    self._default_reset_dpids,
+                )
                 try:
-                    self.debug("Retrieving initial state")
+                    await self._interface.reset(self._default_reset_dpids)
+                    self.debug("Update completed, retrying initial state")
                     status = await self._interface.status()
-                    if status is None:
-                        raise Exception("Failed to retrieve status")
-
+                    if status is None or not status:
+                        raise Exception("Failed to retrieve status") from ex
                     self._interface.start_heartbeat()
                     self.status_updated(status)
+                    return True
+                except Exception as reset_ex:  # pylint: disable=broad-except
+                    ex = reset_ex
 
-                except Exception as ex:
-                    if (self._default_reset_dpids is not None) and (
-                        len(self._default_reset_dpids) > 0
-                    ):
-                        self.debug(
-                            "Initial state update failed, trying reset command "
-                            + "for DP IDs: %s",
-                            self._default_reset_dpids,
-                        )
-                        await self._interface.reset(self._default_reset_dpids)
+            self.error("Initial state update failed, giving up: %r", ex)
+            if self._interface is not None:
+                await self._interface.close()
+                self._interface = None
+            return False
 
-                        self.debug("Update completed, retrying initial state")
-                        status = await self._interface.status()
-                        if status is None or not status:
-                            raise Exception("Failed to retrieve status") from ex
+    def _save_protocol_version(self, protocol_version):
+        """Persist the effective protocol version in the config entry."""
+        self._dev_config_entry[CONF_PROTOCOL_VERSION] = protocol_version
+        new_data = self._config_entry.data.copy()
+        devices = new_data[CONF_DEVICES].copy()
+        dev_id = self._dev_config_entry[CONF_DEVICE_ID]
+        device_data = devices[dev_id].copy()
+        device_data[CONF_PROTOCOL_VERSION] = protocol_version
+        devices[dev_id] = device_data
+        new_data[CONF_DEVICES] = devices
+        self._hass.config_entries.async_update_entry(
+            self._config_entry,
+            data=new_data,
+        )
 
-                        self._interface.start_heartbeat()
-                        self.status_updated(status)
-                    else:
-                        self.error("Initial state update failed, giving up: %r", ex)
-                        if self._interface is not None:
-                            await self._interface.close()
-                            self._interface = None
+    async def _make_connection(self):
+        """Subscribe localtuya entity events."""
+        self.info("Trying to connect to %s...", self._dev_config_entry[CONF_HOST])
+        protocol_version = self._dev_config_entry[CONF_PROTOCOL_VERSION]
 
-            except (UnicodeDecodeError, json.decoder.JSONDecodeError) as ex:
-                self.warning("Initial state update failed (%s), trying key update", ex)
-                await self.update_local_key()
+        if not await self._connect_interface(protocol_version):
+            self._connect_task = None
+            return
 
-                if self._interface is not None:
-                    await self._interface.close()
-                    self._interface = None
+        if not await self._initialize_interface():
+            if protocol_version == "3.4":
+                self.warning(
+                    "Protocol 3.4 failed for %s, retrying with 3.3",
+                    self._dev_config_entry[CONF_HOST],
+                )
+                await self._connect_interface("3.3")
+                if not await self._initialize_interface():
+                    self._connect_task = None
+                    return
+                self._save_protocol_version("3.3")
+            else:
+                self._connect_task = None
+                return
 
         if self._interface is not None:
             # Attempt to restore status for all entities that need to first set
