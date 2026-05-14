@@ -744,7 +744,11 @@ class TuyaProtocol(asyncio.Protocol, ContextualLogger):
         """Send and receive a message, returning response from device."""
         if self.version == 3.4 and self.real_local_key == self.local_key:
             self.debug("3.4 device: negotiating a new session key")
-            await self._negotiate_session_key()
+            success = await self._negotiate_session_key()
+            if not success:
+                self.error("3.4 session key negotiation failed, aborting exchange")
+                await self.close()
+                return None
 
         self.debug(
             "Sending command %s (device type: %s)",
