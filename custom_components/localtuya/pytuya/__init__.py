@@ -802,10 +802,20 @@ class TuyaProtocol(asyncio.Protocol, ContextualLogger):
 
     async def status(self):
         """Return device status."""
-        status = await self.exchange(DP_QUERY)
+        try:
+            status = await self.exchange(DP_QUERY)
+        except Exception as ex:
+            self.error("status() exchange failed: %s", ex)
+            return None
         if status and "dps" in status:
             self.dps_cache.update(status["dps"])
             return self.dps_cache
+        if status is None:
+            self.debug("status() received None from exchange")
+        elif not isinstance(status, dict):
+            self.debug("status() received non-dict: %r", status)
+        else:
+            self.debug("status() received dict without dps: %r", status)
         return None
 
     async def heartbeat(self):
@@ -981,12 +991,17 @@ class TuyaProtocol(asyncio.Protocol, ContextualLogger):
     async def _negotiate_session_key(self):
         self.local_key = self.real_local_key
 
-        rkey = await self.exchange_quick(
-            MessagePayload(SESS_KEY_NEG_START, self.local_nonce), 2
-        )
+        try:
+            rkey = await self.exchange_quick(
+                MessagePayload(SESS_KEY_NEG_START, self.local_nonce), 2
+            )
+        except Exception as ex:
+            self.error("session key negotiation step 1 exception: %s", ex)
+            return False
+
         if not rkey or not isinstance(rkey, TuyaMessage) or len(rkey.payload) < 48:
             # error
-            self.debug("session key negotiation failed on step 1")
+            self.debug("session key negotiation failed on step 1: rkey=%r", rkey)
             return False
 
         if rkey.cmd != SESS_KEY_NEG_RESP:
