@@ -441,9 +441,12 @@ class TuyaDevice(pytuya.TuyaListener, pytuya.ContextualLogger):
             self._unsub_interval = None
         self._interface = None
 
+        # Keep any startup/reconnect task running so fallback logic can complete.
         if self._connect_task is not None:
-            self._connect_task.cancel()
-            self._connect_task = None
+            self.debug(
+                "Preserving existing connect task after disconnect: %s",
+                self._connect_task,
+            )
         self.warning("Disconnected - waiting for discovery broadcast")
 
 
